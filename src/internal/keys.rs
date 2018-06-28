@@ -17,6 +17,7 @@
 
 use cbor::skip::Skip;
 use cbor::{Config, Decoder, Encoder};
+use cnewhope;
 use internal::ffi;
 use internal::types::{DecodeError, DecodeResult, EncodeResult};
 use internal::util::{fmt_hex, opt, Bytes32, Bytes64};
@@ -141,6 +142,233 @@ impl IdentityKeyPair {
     }
 }
 
+// PQ keys ////////////////////////////////////////////////////////////
+
+pub const PQ_SHARED_SECRET_LENGTH: usize = cnewhope::SHARED_SECRET_LENGTH;
+pub type PqSharedSecret = [u8; PQ_SHARED_SECRET_LENGTH];
+
+#[derive(Clone)]
+pub struct AlicePqPublicKey(pub [u8; cnewhope::SENDBBYTES]);
+
+impl PartialEq for AlicePqPublicKey {
+    fn eq(&self, other: &AlicePqPublicKey) -> bool {
+        self.0[..] == other.0[..]
+    }
+}
+
+impl Eq for AlicePqPublicKey {}
+
+impl Default for AlicePqPublicKey {
+    fn default() -> Self {
+        AlicePqPublicKey([0u8; cnewhope::SENDBBYTES])
+    }
+}
+
+impl AlicePqPublicKey {
+    pub fn encode<W: Write>(&self, e: &mut Encoder<W>) -> EncodeResult<()> {
+        e.object(1)?;
+        e.u8(0).and(e.bytes(&self.0))?;
+        Ok(())
+    }
+
+    pub fn decode<R: Read + Skip>(d: &mut Decoder<R>) -> DecodeResult<AlicePqPublicKey> {
+        let n = d.object()?;
+        let mut sendb = None;
+
+        for _ in 0..n {
+            match d.u8()? {
+                0 => {
+                    let mut sendb_bytes = [0u8; cnewhope::SENDBBYTES];
+                    match d.read_bytes(&mut sendb_bytes)? {
+                        cnewhope::SENDBBYTES => {
+                            uniq!("AlicePqPublicKey::sendb_bytes", sendb, sendb_bytes);
+                        }
+                        _ => {
+                            return Err(DecodeError::InvalidArrayLen(n));
+                        }
+                    }
+                }
+                _ => d.skip()?,
+            }
+        }
+        let sendb = sendb.ok_or(DecodeError::MissingField("AlicePqPublicKey::sendb_bytes"))?;
+        Ok(AlicePqPublicKey(sendb))
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct BobPqSecretKey(cnewhope::Poly);
+
+impl BobPqSecretKey {
+    pub fn encode<W: Write>(&self, e: &mut Encoder<W>) -> EncodeResult<()> {
+        e.object(1)?;
+        e.u8(0).and(e.bytes(&self.0.to_bytes()))?;
+        Ok(())
+    }
+
+    pub fn decode<R: Read + Skip>(d: &mut Decoder<R>) -> DecodeResult<BobPqSecretKey> {
+        let n = d.object()?;
+        let mut poly = None;
+
+        for _ in 0..n {
+            match d.u8()? {
+                0 => {
+                    let mut poly_bytes = [0u8; cnewhope::N2];
+                    match d.read_bytes(&mut poly_bytes)? {
+                        cnewhope::N2 => {
+                            uniq!(
+                                "BobPqSecretKey::poly_bytes",
+                                poly,
+                                cnewhope::Poly::from_bytes(&poly_bytes)
+                            );
+                        }
+                        _ => {
+                            return Err(DecodeError::InvalidArrayLen(n));
+                        }
+                    }
+                }
+                _ => d.skip()?,
+            }
+        }
+        let poly = poly.ok_or(DecodeError::MissingField("BobPqSecretKey::poly_bytes"))?;
+        Ok(BobPqSecretKey(poly))
+    }
+}
+
+#[derive(Clone)]
+pub struct BobPqPublicKey([u8; cnewhope::SENDABYTES]);
+
+impl PartialEq for BobPqPublicKey {
+    fn eq(&self, other: &BobPqPublicKey) -> bool {
+        self.0[..] == other.0[..]
+    }
+}
+
+impl Eq for BobPqPublicKey {}
+
+impl Debug for BobPqPublicKey {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        write!(f, "{:?}", &self.0.to_vec())
+    }
+}
+
+impl BobPqPublicKey {
+    pub fn encode<W: Write>(&self, e: &mut Encoder<W>) -> EncodeResult<()> {
+        e.object(1)?;
+        e.u8(0).and(e.bytes(&self.0))?;
+        Ok(())
+    }
+
+    pub fn decode<R: Read + Skip>(d: &mut Decoder<R>) -> DecodeResult<BobPqPublicKey> {
+        let n = d.object()?;
+        let mut senda = None;
+
+        for _ in 0..n {
+            match d.u8()? {
+                0 => {
+                    let mut senda_bytes = [0u8; cnewhope::SENDABYTES];
+                    match d.read_bytes(&mut senda_bytes)? {
+                        cnewhope::SENDABYTES => {
+                            uniq!("BobPqSecretKey::senda_bytes", senda, senda_bytes);
+                        }
+                        _ => {
+                            return Err(DecodeError::InvalidArrayLen(n));
+                        }
+                    }
+                }
+                _ => d.skip()?,
+            }
+        }
+        let senda = senda.ok_or(DecodeError::MissingField("BobPqSecretKey::senda_bytes"))?;
+        Ok(BobPqPublicKey(senda))
+    }
+
+    pub fn derive_secret_and_key(&self) -> cnewhope::DerivedSecretAndKey {
+        let mut public_key = [0u8; cnewhope::SENDBBYTES];
+        let mut shared_secret = [0u8; cnewhope::SHARED_SECRET_LENGTH];
+
+        unsafe {
+            cnewhope::newhope_sharedb(
+                shared_secret.as_mut_ptr(),
+                public_key.as_mut_ptr(),
+                self.0.as_ptr(),
+            );
+        };
+
+        cnewhope::DerivedSecretAndKey {
+            shared_secret,
+            public_key,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct BobPqKeyPair {
+    pub public_key: BobPqPublicKey,
+    pub secret_key: BobPqSecretKey,
+}
+
+impl BobPqKeyPair {
+    pub fn new() -> BobPqKeyPair {
+        let mut secret_key = cnewhope::Poly::default();
+        let mut public_key = [0u8; cnewhope::SENDABYTES];
+        unsafe { cnewhope::newhope_keygen(public_key.as_mut_ptr(), &mut secret_key) };
+        BobPqKeyPair {
+            public_key: BobPqPublicKey(public_key),
+            secret_key: BobPqSecretKey(secret_key),
+        }
+    }
+
+    pub fn encode<W: Write>(&self, e: &mut Encoder<W>) -> EncodeResult<()> {
+        e.object(2)?;
+        e.u8(0)?;
+        self.secret_key.encode(e)?;
+        e.u8(1)?;
+        self.public_key.encode(e)
+    }
+
+    pub fn decode<R: Read + Skip>(d: &mut Decoder<R>) -> DecodeResult<BobPqKeyPair> {
+        let n = d.object()?;
+        let mut secret_key = None;
+        let mut public_key = None;
+        for _ in 0..n {
+            match d.u8()? {
+                0 => uniq!(
+                    "BobPqKeyPair::secret_key",
+                    secret_key,
+                    BobPqSecretKey::decode(d)?
+                ),
+                1 => uniq!(
+                    "BobPqKeyPair::public_key",
+                    public_key,
+                    BobPqPublicKey::decode(d)?
+                ),
+                _ => d.skip()?,
+            }
+        }
+        Ok(BobPqKeyPair {
+            secret_key: to_field!(secret_key, "BobPqKeyPair::secret_key"),
+            public_key: to_field!(public_key, "BobPqKeyPair::public_key"),
+        })
+    }
+
+    pub fn derive_secret(&self, a: &AlicePqPublicKey) -> PqSharedSecret {
+        let mut shared_secret = [0u8; cnewhope::SHARED_SECRET_LENGTH];
+
+        unsafe {
+            cnewhope::newhope_shareda(shared_secret.as_mut_ptr(), &self.secret_key.0, a.0.as_ptr());
+        };
+
+        shared_secret
+    }
+}
+
+impl Default for BobPqKeyPair {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Prekey ///////////////////////////////////////////////////////////////////
 
 #[derive(Clone)]
@@ -148,6 +376,7 @@ pub struct PreKey {
     pub version: u8,
     pub key_id: PreKeyId,
     pub key_pair: KeyPair,
+    pub pq_key_pair: Option<BobPqKeyPair>,
 }
 
 impl PreKey {
@@ -156,6 +385,7 @@ impl PreKey {
             version: 1,
             key_id: i,
             key_pair: KeyPair::new(),
+            pq_key_pair: None, // Some(BobPqKeyPair::new())
         }
     }
 
@@ -180,7 +410,13 @@ impl PreKey {
         e.u8(1)?;
         self.key_id.encode(e)?;
         e.u8(2)?;
-        self.key_pair.encode(e)
+        self.key_pair.encode(e)?;
+        if let Some(ref k) = self.pq_key_pair {
+            e.u8(3)?;
+            k.encode(e)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn decode<R: Read + Skip>(d: &mut Decoder<R>) -> DecodeResult<PreKey> {
@@ -188,11 +424,17 @@ impl PreKey {
         let mut version = None;
         let mut key_id = None;
         let mut key_pair = None;
+        let mut pq_key_pair = None;
         for _ in 0..n {
             match d.u8()? {
                 0 => uniq!("PreKey::version", version, d.u8()?),
                 1 => uniq!("PreKey::key_id", key_id, PreKeyId::decode(d)?),
                 2 => uniq!("PreKey::key_pair", key_pair, KeyPair::decode(d)?),
+                3 => uniq!(
+                    "PreKey::pq_key_pair",
+                    pq_key_pair,
+                    opt(BobPqKeyPair::decode(d))?
+                ),
                 _ => d.skip()?,
             }
         }
@@ -200,6 +442,7 @@ impl PreKey {
             version: to_field!(version, "PreKey::version"),
             key_id: to_field!(key_id, "PreKey::key_id"),
             key_pair: to_field!(key_pair, "PreKey::key_pair"),
+            pq_key_pair: pq_key_pair.unwrap_or(None),
         })
     }
 }
@@ -227,6 +470,7 @@ pub struct PreKeyBundle {
     pub prekey_id: PreKeyId,
     pub public_key: PublicKey,
     pub identity_key: IdentityKey,
+    pub pq_key: Option<BobPqPublicKey>,
     pub signature: Option<Signature>,
 }
 
@@ -237,6 +481,11 @@ impl PreKeyBundle {
             prekey_id: key.key_id,
             public_key: key.key_pair.public_key.clone(),
             identity_key: ident,
+            pq_key: if let Some(ref k) = key.pq_key_pair {
+                Some(k.public_key.clone())
+            } else {
+                None
+            },
             signature: None,
         }
     }
@@ -249,21 +498,24 @@ impl PreKeyBundle {
             prekey_id: key.key_id,
             public_key: ratchet_key,
             identity_key: ident.public_key.clone(),
+            pq_key: None,
             signature: Some(signature),
         }
     }
 
     pub fn verify(&self) -> PreKeyAuth {
         match self.signature {
-            Some(ref sig) => if self
-                .identity_key
-                .public_key
-                .verify(sig, &self.public_key.pub_edward.0)
-            {
-                PreKeyAuth::Valid
-            } else {
-                PreKeyAuth::Invalid
-            },
+            Some(ref sig) => {
+                if self
+                    .identity_key
+                    .public_key
+                    .verify(sig, &self.public_key.pub_edward.0)
+                {
+                    PreKeyAuth::Valid
+                } else {
+                    PreKeyAuth::Invalid
+                }
+            }
             None => PreKeyAuth::Unknown,
         }
     }
@@ -288,9 +540,13 @@ impl PreKeyBundle {
         self.public_key.encode(e)?;
         e.u8(3)?;
         self.identity_key.encode(e)?;
-        e.u8(4)?;
-        match self.signature {
-            Some(ref sig) => sig.encode(e),
+        if let Some(ref sig) = self.signature {
+            e.u8(4)?;
+            sig.encode(e)?;
+        }
+        e.u8(5)?;
+        match self.pq_key {
+            Some(ref k) => k.encode(e),
             None => e.null().map_err(From::from),
         }
     }
@@ -302,6 +558,7 @@ impl PreKeyBundle {
         let mut public_key = None;
         let mut identity_key = None;
         let mut signature = None;
+        let mut pq_key = None;
         for _ in 0..n {
             match d.u8()? {
                 0 => uniq!("PreKeyBundle::version", version, d.u8()?),
@@ -321,6 +578,11 @@ impl PreKeyBundle {
                     signature,
                     opt(Signature::decode(d))?
                 ),
+                5 => uniq!(
+                    "PreKeyBundle::pq_key",
+                    pq_key,
+                    opt(BobPqPublicKey::decode(d))?
+                ),
                 _ => d.skip()?,
             }
         }
@@ -329,6 +591,7 @@ impl PreKeyBundle {
             prekey_id: to_field!(prekey_id, "PreKeyBundle::prekey_id"),
             public_key: to_field!(public_key, "PreKeyBundle::public_key"),
             identity_key: to_field!(identity_key, "PreKeyBundle::identity_key"),
+            pq_key: pq_key.unwrap_or(None),
             signature: signature.unwrap_or(None),
         })
     }
@@ -657,6 +920,36 @@ mod tests {
     }
 
     #[test]
+    fn enc_dec_alice_pq_pubkey() {
+        let k = AlicePqPublicKey::default();
+        let r = roundtrip(
+            |mut e| k.encode(&mut e),
+            |mut d| AlicePqPublicKey::decode(&mut d),
+        );
+        assert_eq!(k.0[..], r.0[..])
+    }
+
+    #[test]
+    fn enc_dec_bob_pq_pubkey() {
+        let k = BobPqKeyPair::new();
+        let r = roundtrip(
+            |mut e| k.public_key.encode(&mut e),
+            |mut d| BobPqPublicKey::decode(&mut d),
+        );
+        assert_eq!(k.public_key.0[..], r.0[..])
+    }
+
+    #[test]
+    fn enc_dec_pq_seckey() {
+        let k = BobPqKeyPair::new();
+        let r = roundtrip(
+            |mut e| k.secret_key.encode(&mut e),
+            |mut d| BobPqSecretKey::decode(&mut d),
+        );
+        assert_eq!(k.secret_key.0.coeffs[..], r.0.coeffs[..]);
+    }
+
+    #[test]
     fn enc_dec_prekey_bundle() {
         let i = IdentityKeyPair::new();
         let k = PreKey::new(PreKeyId::new(1));
@@ -690,5 +983,13 @@ mod tests {
             k.public_key.pub_curve.0[i] = 0
         }
         assert_eq!(Err(Zero {}), k.secret_key.shared_secret(&k.public_key))
+    }
+
+    #[test]
+    fn pq_key_agreement() {
+        let kp = BobPqKeyPair::new();
+        let k_s = kp.public_key.derive_secret_and_key();
+        let apk = AlicePqPublicKey(k_s.public_key);
+        assert_eq!(kp.derive_secret(&apk)[..], k_s.shared_secret[..]);
     }
 }

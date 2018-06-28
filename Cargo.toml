@@ -1,15 +1,17 @@
 [package]
 
-name         = "proteus"
+name         = "pqproteus"
 version      = "1.0.0"
 authors      = ["Wire Swiss GmbH <support@wire.com>"]
 description  = "Axolotl protocol implementation"
-homepage     = "https://github.com/wireapp/proteus"
-repository   = "git@github.com:wireapp/proteus.git"
+homepage     = "https://github.com/wireapp/pqproteus"
+repository   = "git@github.com:wireapp/pqproteus.git"
 license      = "GPL-3.0"
 
 [dependencies]
+byteorder     = ">  0.2.0"
 cbor-codec    = ">= 0.7.0"
 hkdf          = { git = "https://github.com/wireapp/hkdf", branch = "develop"}
-sodiumoxide   = { version = "^0.1.0", default-features = false, features = ["std"] }
-
+libc          = ">  0.1.0"
+sodiumoxide   = { version = ">= 0.0.14", default-features = false, features = ["std"] }
+cnewhope      = { version = ">= 0.1.0", path = "../newhope-rs" }
