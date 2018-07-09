@@ -3,7 +3,7 @@
 name         = "pqproteus"
 version      = "1.0.0"
 authors      = ["Wire Swiss GmbH <support@wire.com>"]
-description  = "Axolotl protocol implementation"
+description  = "Post-quantum variant of Proteus"
 homepage     = "https://github.com/wireapp/pqproteus"
 repository   = "git@github.com:wireapp/pqproteus.git"
 license      = "GPL-3.0"
@@ -12,6 +12,5 @@ license      = "GPL-3.0"
 byteorder     = ">  0.2.0"
 cbor-codec    = ">= 0.7.0"
 hkdf          = { git = "https://github.com/wireapp/hkdf", branch = "develop"}
-libc          = ">  0.1.0"
-sodiumoxide   = { version = ">= 0.0.14", default-features = false, features = ["std"] }
+sodiumoxide   = { version = "^0.1.0", default-features = false, features = ["std"] }
 cnewhope      = { version = ">= 0.1.0", path = "../newhope-rs" }

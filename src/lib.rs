@@ -19,7 +19,6 @@ extern crate byteorder;
 extern crate cbor;
 extern crate cnewhope;
 extern crate hkdf;
-extern crate libc;
 extern crate sodiumoxide;
 
 pub mod internal;
@@ -27,8 +26,8 @@ pub mod keys;
 pub mod message;
 pub mod session;
 
-pub fn init() -> Result<(), ()> {
-    sodiumoxide::init()
+pub fn init() -> bool {
+    sodiumoxide::init().is_ok()
 }
 
 pub use internal::types::{DecodeError, EncodeError};

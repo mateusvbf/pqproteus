@@ -438,14 +438,12 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
             pq_shared_secret = Some(alice_pq_shared_secret_and_key.shared_secret);
         };
 
-        let state = SessionState::init_as_alice(AliceParams {
+        let state = SessionState::init_as_alice(&AliceParams {
             alice_ident: alice.borrow(),
             alice_base: &alice_base,
             bob: &pk,
             pq_shared_secret,
         })?;
-
-        // FIXME: zeroize some values like pq_shared_secret
 
         let session_tag = SessionTag::new();
         let mut session = Session {
@@ -779,7 +777,7 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    fn init_as_alice<E>(p: AliceParams) -> Result<SessionState, Error<E>> {
+    fn init_as_alice<E>(p: &AliceParams) -> Result<SessionState, Error<E>> {
         let mut master_key: Vec<u8> = Vec::new();
 
         master_key.extend(&p.alice_ident.secret_key.shared_secret(&p.bob.public_key)?);
@@ -807,10 +805,6 @@ impl SessionState {
         let send_ratchet = KeyPair::new();
         let (rok, chk) = rootkey.dh_ratchet(&send_ratchet, &p.bob.public_key)?;
         let send_chain = SendChain::new(chk, send_ratchet);
-
-        // FIXME zeroize p first
-
-        drop(p);
 
         Ok(SessionState {
             recv_chains,
