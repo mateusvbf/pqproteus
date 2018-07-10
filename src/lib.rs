@@ -15,7 +15,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+extern crate byteorder;
 extern crate cbor;
+extern crate cnewhope;
 extern crate hkdf;
 extern crate sodiumoxide;
 

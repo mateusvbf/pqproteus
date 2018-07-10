@@ -15,10 +15,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use byteorder::{BigEndian, ByteOrder};
 use cbor::skip::Skip;
 use cbor::{Config, Decoder, Encoder};
 use internal::derived::{Mac, MacKey, Nonce};
-use internal::keys::{IdentityKey, PreKeyId, PublicKey};
+use internal::keys::{AlicePqPublicKey, IdentityKey, PreKeyId, PublicKey};
 use internal::types::{DecodeError, DecodeResult, EncodeResult};
 use internal::util::fmt_hex;
 use sodiumoxide::randombytes;
@@ -47,10 +48,7 @@ impl Counter {
 
     pub fn as_nonce(self) -> Nonce {
         let mut nonce = [0; 8];
-        nonce[0] = (self.0 >> 24) as u8;
-        nonce[1] = (self.0 >> 16) as u8;
-        nonce[2] = (self.0 >> 8) as u8;
-        nonce[3] = self.0 as u8;
+        BigEndian::write_u32(&mut nonce, self.0);
         Nonce::new(nonce)
     }
 
@@ -140,6 +138,7 @@ impl<'r> Message<'r> {
 pub struct PreKeyMessage<'r> {
     pub prekey_id: PreKeyId,
     pub base_key: Cow<'r, PublicKey>,
+    pub pq_base_key: Option<Cow<'r, AlicePqPublicKey>>,
     pub identity_key: Cow<'r, IdentityKey>,
     pub message: CipherMessage<'r>,
 }
@@ -149,6 +148,10 @@ impl<'r> PreKeyMessage<'r> {
         PreKeyMessage {
             prekey_id: self.prekey_id,
             base_key: Cow::Owned(self.base_key.into_owned()),
+            pq_base_key: match self.pq_base_key {
+                Some(_) => Some(Cow::Owned(self.pq_base_key.unwrap().into_owned())),
+                None => None,
+            },
             identity_key: Cow::Owned(self.identity_key.into_owned()),
             message: self.message.into_owned(),
         }
@@ -163,13 +166,20 @@ impl<'r> PreKeyMessage<'r> {
         e.u8(2)?;
         self.identity_key.encode(e)?;
         e.u8(3)?;
-        self.message.encode(e)
+        self.message.encode(e)?;
+        if let Some(ref x) = self.pq_base_key {
+            e.u8(4)?;
+            x.encode(e)
+        } else {
+            Ok(())
+        }
     }
 
     fn decode<'s, R: Read + Skip>(d: &mut Decoder<R>) -> DecodeResult<PreKeyMessage<'s>> {
         let n = d.object()?;
         let mut prekey_id = None;
         let mut base_key = None;
+        let mut pq_base_key = None;
         let mut identity_key = None;
         let mut message = None;
         for _ in 0..n {
@@ -182,12 +192,24 @@ impl<'r> PreKeyMessage<'r> {
                     IdentityKey::decode(d)?
                 ),
                 3 => uniq!("PreKeyMessage::message", message, CipherMessage::decode(d)?),
+                4 => uniq!(
+                    "PreKeyMessage::pq_base_key",
+                    pq_base_key,
+                    AlicePqPublicKey::decode(d)?
+                ),
                 _ => d.skip()?,
             }
         }
         Ok(PreKeyMessage {
             prekey_id: to_field!(prekey_id, "PreKeyMessage::prekey_id"),
             base_key: Cow::Owned(to_field!(base_key, "PreKeyMessage::base_key")),
+            pq_base_key: match pq_base_key {
+                Some(_) => Some(Cow::Owned(to_field!(
+                    pq_base_key,
+                    "PreKeyMessage::pq_base_key"
+                ))),
+                None => None,
+            },
             identity_key: Cow::Owned(to_field!(identity_key, "PreKeyMessage::identity_key")),
             message: to_field!(message, "PreKeyMessage::message"),
         })
@@ -389,6 +411,7 @@ mod tests {
         let m1 = Message::Keyed(PreKeyMessage {
             prekey_id: PreKeyId::new(42),
             base_key: Cow::Borrowed(&bk),
+            pq_base_key: None,
             identity_key: Cow::Borrowed(&ik),
             message: CipherMessage {
                 session_tag: tg,

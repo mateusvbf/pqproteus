@@ -27,7 +27,7 @@ use cbor::skip::Skip;
 use cbor::{self, Config, Decoder, Encoder};
 use hkdf::{Info, Input, Salt};
 use internal::derived::{CipherKey, DerivedSecrets, MacKey};
-use internal::keys::{self, KeyPair, PublicKey};
+use internal::keys::{self, AlicePqPublicKey, KeyPair, PqSharedSecret, PublicKey};
 use internal::keys::{IdentityKey, IdentityKeyPair, PreKey, PreKeyBundle, PreKeyId};
 use internal::message::{CipherMessage, Counter, Envelope, Message, PreKeyMessage, SessionTag};
 use internal::types::{DecodeError, DecodeResult, EncodeResult, InternalError};
@@ -406,7 +406,7 @@ pub struct Session<I> {
     counter: usize,
     local_identity: I,
     remote_identity: IdentityKey,
-    pending_prekey: Option<(PreKeyId, PublicKey)>,
+    pending_prekey: Option<(PreKeyId, PublicKey, Option<AlicePqPublicKey>)>,
     session_states: BTreeMap<SessionTag, Indexed<SessionState>>,
 }
 
@@ -414,6 +414,7 @@ struct AliceParams<'r> {
     alice_ident: &'r IdentityKeyPair,
     alice_base: &'r KeyPair,
     bob: &'r PreKeyBundle,
+    pq_shared_secret: Option<PqSharedSecret>,
 }
 
 struct BobParams<'r> {
@@ -421,15 +422,27 @@ struct BobParams<'r> {
     bob_prekey: KeyPair,
     alice_ident: &'r IdentityKey,
     alice_base: &'r PublicKey,
+    pq_shared_secret: Option<PqSharedSecret>,
 }
 
 impl<I: Borrow<IdentityKeyPair>> Session<I> {
+    // Initiate a session on Alice's side with a prekey from Bob
     pub fn init_from_prekey<E>(alice: I, pk: PreKeyBundle) -> Result<Session<I>, Error<E>> {
         let alice_base = KeyPair::new();
+        let mut pq_shared_secret = None;
+        let mut alice_pq_public_key = None;
+
+        if let Some(ref k) = pk.pq_key {
+            let mut alice_pq_shared_secret_and_key = k.derive_secret_and_key();
+            alice_pq_public_key = Some(AlicePqPublicKey(alice_pq_shared_secret_and_key.public_key));
+            pq_shared_secret = Some(alice_pq_shared_secret_and_key.shared_secret);
+        };
+
         let state = SessionState::init_as_alice(&AliceParams {
             alice_ident: alice.borrow(),
             alice_base: &alice_base,
             bob: &pk,
+            pq_shared_secret,
         })?;
 
         let session_tag = SessionTag::new();
@@ -439,7 +452,7 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
             counter: 0,
             local_identity: alice,
             remote_identity: pk.identity_key,
-            pending_prekey: Some((pk.prekey_id, alice_base.public_key)),
+            pending_prekey: Some((pk.prekey_id, alice_base.public_key, alice_pq_public_key)),
             session_states: BTreeMap::new(),
         };
 
@@ -537,7 +550,7 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
             Some(s) => s.val.clone(),
             None => return Err(Error::InvalidMessage),
         };
-        let plain = s.decrypt(env, &m)?;
+        let plain = s.decrypt(env, m)?;
         self.pending_prekey = None;
         self.insert_session_state(m.session_tag, s);
         Ok(plain)
@@ -554,11 +567,17 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
         m: &PreKeyMessage,
     ) -> Result<Option<SessionState>, Error<S::Error>> {
         if let Some(prekey) = store.prekey(m.prekey_id).map_err(Error::PreKeyStoreError)? {
+            let mut pq_shared_secret = None;
+
+            if let Some(ref k) = m.pq_base_key {
+                pq_shared_secret = Some(prekey.pq_key_pair.unwrap().derive_secret(k));
+            };
             let s = SessionState::init_as_bob(BobParams {
                 bob_ident: self.local_identity.borrow(),
                 bob_prekey: prekey.key_pair,
                 alice_ident: &m.identity_key,
                 alice_base: &m.base_key,
+                pq_shared_secret,
             })?;
             Ok(Some(s))
         } else {
@@ -644,12 +663,20 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
         {
             match self.pending_prekey {
                 None => e.null()?,
-                Some((id, ref pk)) => {
-                    e.object(2)?;
+                Some((id, ref pk, ref pq_key)) => {
+                    let num = match *pq_key {
+                        Some(_) => 3,
+                        None => 2,
+                    };
+                    e.object(num)?;
                     e.u8(0)?;
                     id.encode(e)?;
                     e.u8(1)?;
-                    pk.encode(e)?
+                    pk.encode(e)?;
+                    if let Some(ref k) = *pq_key {
+                        e.u8(2)?;
+                        k.encode(e)?
+                    }
                 }
             }
         }
@@ -691,16 +718,23 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
                     if let Some(n) = cbor::opt(d.object())? {
                         let mut id = None;
                         let mut pk = None;
+                        let mut pq_key = None;
                         for _ in 0..n {
                             match d.u8()? {
                                 0 => uniq!("PendingPreKey::id", id, PreKeyId::decode(d)?),
                                 1 => uniq!("PendingPreKey::pk", pk, PublicKey::decode(d)?),
+                                2 => uniq!(
+                                    "PendingPreKey::pq_key",
+                                    pq_key,
+                                    AlicePqPublicKey::decode(d)?
+                                ),
                                 _ => d.skip()?,
                             }
                         }
                         Some((
                             to_field!(id, "Session::pending_prekey_id"),
                             to_field!(pk, "Session::pending_prekey"),
+                            pq_key,
                         ))
                     } else {
                         None
@@ -713,7 +747,7 @@ impl<I: Borrow<IdentityKeyPair>> Session<I> {
                         let t = SessionTag::decode(d)?;
                         let s = SessionState::decode(d)?;
                         rb.insert(t, Indexed::new(counter, s));
-                        counter += 1;
+                        counter += 1
                     }
                     rb
                 }),
@@ -744,16 +778,18 @@ pub struct SessionState {
 
 impl SessionState {
     fn init_as_alice<E>(p: &AliceParams) -> Result<SessionState, Error<E>> {
-        let master_key = {
-            let mut buf = Vec::new();
-            buf.extend(&p.alice_ident.secret_key.shared_secret(&p.bob.public_key)?);
-            buf.extend(
-                &p.alice_base
-                    .secret_key
-                    .shared_secret(&p.bob.identity_key.public_key)?,
-            );
-            buf.extend(&p.alice_base.secret_key.shared_secret(&p.bob.public_key)?);
-            buf
+        let mut master_key: Vec<u8> = Vec::new();
+
+        master_key.extend(&p.alice_ident.secret_key.shared_secret(&p.bob.public_key)?);
+        master_key.extend(
+            &p.alice_base
+                .secret_key
+                .shared_secret(&p.bob.identity_key.public_key)?,
+        );
+        master_key.extend(&p.alice_base.secret_key.shared_secret(&p.bob.public_key)?);
+
+        if let Some(ref s) = p.pq_shared_secret {
+            master_key.extend(s);
         };
 
         let dsecs = DerivedSecrets::kdf_without_salt(Input(&master_key), Info(b"handshake"));
@@ -779,16 +815,17 @@ impl SessionState {
     }
 
     fn init_as_bob<E>(p: BobParams) -> Result<SessionState, Error<E>> {
-        let master_key = {
-            let mut buf = Vec::new();
-            buf.extend(
-                &p.bob_prekey
-                    .secret_key
-                    .shared_secret(&p.alice_ident.public_key)?,
-            );
-            buf.extend(&p.bob_ident.secret_key.shared_secret(p.alice_base)?);
-            buf.extend(&p.bob_prekey.secret_key.shared_secret(p.alice_base)?);
-            buf
+        let mut master_key: Vec<u8> = Vec::new();
+        master_key.extend(
+            &p.bob_prekey
+                .secret_key
+                .shared_secret(&p.alice_ident.public_key)?,
+        );
+        master_key.extend(&p.bob_ident.secret_key.shared_secret(p.alice_base)?);
+        master_key.extend(&p.bob_prekey.secret_key.shared_secret(p.alice_base)?);
+
+        if let Some(ref s) = p.pq_shared_secret {
+            master_key.extend(s);
         };
 
         let dsecs = DerivedSecrets::kdf_without_salt(Input(&master_key), Info(b"handshake"));
@@ -833,7 +870,7 @@ impl SessionState {
     fn encrypt<'r>(
         self: &'r mut SessionState,
         ident: &'r IdentityKey,
-        pending: &'r Option<(PreKeyId, PublicKey)>,
+        pending: &'r Option<(PreKeyId, PublicKey, Option<AlicePqPublicKey>)>,
         tag: SessionTag,
         plain: &[u8],
     ) -> EncodeResult<Envelope> {
@@ -852,7 +889,12 @@ impl SessionState {
             Some(ref pp) => Message::Keyed(PreKeyMessage {
                 prekey_id: pp.0,
                 base_key: Cow::Borrowed(&pp.1),
-                identity_key: Cow::Borrowed(&ident),
+                pq_base_key: if let Some(ref x) = pp.2 {
+                    Some(Cow::Borrowed(x))
+                } else {
+                    None
+                },
+                identity_key: Cow::Borrowed(ident),
                 message: cmessage,
             }),
         };
@@ -863,7 +905,7 @@ impl SessionState {
     }
 
     fn decrypt<E>(&mut self, env: &Envelope, m: &CipherMessage) -> Result<Vec<u8>, Error<E>> {
-        let rchain: &mut RecvChain = match self
+        let rchain = match self
             .recv_chains
             .iter()
             .position(|c| c.ratchet_key == *m.ratchet_key)
