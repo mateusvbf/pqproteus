@@ -386,7 +386,7 @@ impl PreKey {
             version: 1,
             key_id: i,
             key_pair: KeyPair::new(),
-            pq_key_pair: None, // Some(BobPqKeyPair::new())
+            pq_key_pair: Some(BobPqKeyPair::new()),
         }
     }
 
@@ -487,15 +487,31 @@ impl PreKeyBundle {
         }
     }
 
+    fn sign_payload(pub_key: &PublicKey, pq_key: &Option<BobPqPublicKey>) -> Vec<u8> {
+        let mut v: Vec<u8> = Vec::new();
+        v.extend_from_slice(&pub_key.pub_edward.0[..]);
+        if let Some(pk) = pq_key {
+            v.extend_from_slice(&pk.0[..]);
+        }
+        v
+    }
+
     pub fn signed(ident: &IdentityKeyPair, key: &PreKey) -> PreKeyBundle {
         let ratchet_key = key.key_pair.public_key.clone();
-        let signature = ident.secret_key.sign(&ratchet_key.pub_edward.0);
+        let pq_key = if let Some(ref k) = key.pq_key_pair {
+            Some(k.public_key.clone())
+        } else {
+            None
+        };
+        let signature = ident
+            .secret_key
+            .sign(PreKeyBundle::sign_payload(&ratchet_key, &pq_key).as_slice());
         PreKeyBundle {
             version: 1,
             prekey_id: key.key_id,
             public_key: ratchet_key,
             identity_key: ident.public_key.clone(),
-            pq_key: None,
+            pq_key,
             signature: Some(signature),
         }
     }
@@ -503,11 +519,10 @@ impl PreKeyBundle {
     pub fn verify(&self) -> PreKeyAuth {
         match self.signature {
             Some(ref sig) => {
-                if self
-                    .identity_key
-                    .public_key
-                    .verify(sig, &self.public_key.pub_edward.0)
-                {
+                if self.identity_key.public_key.verify(
+                    sig,
+                    PreKeyBundle::sign_payload(&self.public_key, &self.pq_key).as_slice(),
+                ) {
                     PreKeyAuth::Valid
                 } else {
                     PreKeyAuth::Invalid
@@ -528,7 +543,7 @@ impl PreKeyBundle {
     }
 
     pub fn encode<W: Write>(&self, e: &mut Encoder<W>) -> EncodeResult<()> {
-        e.object(5)?;
+        e.object(6)?;
         e.u8(0)?;
         e.u8(self.version)?;
         e.u8(1)?;
@@ -541,7 +556,7 @@ impl PreKeyBundle {
         if let Some(ref sig) = self.signature {
             sig.encode(e)?;
         } else {
-            return e.null().map_err(From::from);
+            e.null()?;
         }
         e.u8(5)?;
         match self.pq_key {
