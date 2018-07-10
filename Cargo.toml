@@ -13,4 +13,4 @@ byteorder     = ">  0.2.0"
 cbor-codec    = ">= 0.7.0"
 hkdf          = { git = "https://github.com/wireapp/hkdf", branch = "develop"}
 sodiumoxide   = { version = "^0.1.0", default-features = false, features = ["std"] }
-cnewhope      = { version = ">= 0.1.0", path = "../newhope-rs" }
+cnewhope      = { version = ">= 0.1.0", git = "https://github.com/wireapp/newhope-rs" }
