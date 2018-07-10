@@ -24,6 +24,7 @@ use internal::util::{fmt_hex, opt, Bytes32, Bytes64};
 use sodiumoxide::crypto::scalarmult as ecdh;
 use sodiumoxide::crypto::sign;
 use sodiumoxide::randombytes;
+use sodiumoxide::utils::memcmp;
 use std::fmt::{self, Debug, Error, Formatter};
 use std::io::{Cursor, Read, Write};
 use std::u16;
@@ -152,7 +153,7 @@ pub struct AlicePqPublicKey(pub [u8; cnewhope::SENDBBYTES]);
 
 impl PartialEq for AlicePqPublicKey {
     fn eq(&self, other: &AlicePqPublicKey) -> bool {
-        self.0[..] == other.0[..]
+        memcmp(&self.0, &other.0)
     }
 }
 
@@ -240,7 +241,7 @@ pub struct BobPqPublicKey([u8; cnewhope::SENDABYTES]);
 
 impl PartialEq for BobPqPublicKey {
     fn eq(&self, other: &BobPqPublicKey) -> bool {
-        self.0[..] == other.0[..]
+        memcmp(&self.0, &other.0)
     }
 }
 
@@ -430,11 +431,7 @@ impl PreKey {
                 0 => uniq!("PreKey::version", version, d.u8()?),
                 1 => uniq!("PreKey::key_id", key_id, PreKeyId::decode(d)?),
                 2 => uniq!("PreKey::key_pair", key_pair, KeyPair::decode(d)?),
-                3 => uniq!(
-                    "PreKey::pq_key_pair",
-                    pq_key_pair,
-                    opt(BobPqKeyPair::decode(d))?
-                ),
+                3 => uniq!("PreKey::pq_key_pair", pq_key_pair, BobPqKeyPair::decode(d)?),
                 _ => d.skip()?,
             }
         }
@@ -442,7 +439,7 @@ impl PreKey {
             version: to_field!(version, "PreKey::version"),
             key_id: to_field!(key_id, "PreKey::key_id"),
             key_pair: to_field!(key_pair, "PreKey::key_pair"),
-            pq_key_pair: pq_key_pair.unwrap_or(None),
+            pq_key_pair,
         })
     }
 }
@@ -540,9 +537,11 @@ impl PreKeyBundle {
         self.public_key.encode(e)?;
         e.u8(3)?;
         self.identity_key.encode(e)?;
+        e.u8(4)?;
         if let Some(ref sig) = self.signature {
-            e.u8(4)?;
             sig.encode(e)?;
+        } else {
+            return e.null().map_err(From::from);
         }
         e.u8(5)?;
         match self.pq_key {
